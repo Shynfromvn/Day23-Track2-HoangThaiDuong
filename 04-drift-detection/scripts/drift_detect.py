@@ -10,6 +10,7 @@ Outputs:
 from __future__ import annotations
 
 import json
+from html import escape
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +66,74 @@ def kl_divergence(reference: np.ndarray, current: np.ndarray, bins: int = 20) ->
     return float(np.sum(ref_p * np.log(ref_p / cur_p)))
 
 
+def write_fallback_html_report(summary: dict[str, dict[str, float | str]]) -> Path:
+    """Write a small renderable HTML report when Evidently is unavailable."""
+    rows = "\n".join(
+        "<tr>"
+        f"<td>{escape(feature)}</td>"
+        f"<td>{metrics['psi']}</td>"
+        f"<td>{metrics['kl']}</td>"
+        f"<td>{metrics['ks_stat']}</td>"
+        f"<td>{metrics['ks_pvalue']}</td>"
+        f"<td>{escape(str(metrics['drift']))}</td>"
+        "</tr>"
+        for feature, metrics in summary.items()
+    )
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Day 23 Drift Report</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 32px; color: #1f2937; }}
+    table {{ border-collapse: collapse; width: 100%; max-width: 960px; }}
+    th, td {{ border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; }}
+    th {{ background: #f3f4f6; }}
+    .yes {{ color: #b91c1c; font-weight: 700; }}
+  </style>
+</head>
+<body>
+  <h1>Day 23 Drift Report</h1>
+  <p>Fallback HTML generated from PSI, KL, and KS metrics because Evidently is not installed in this Python environment.</p>
+  <table>
+    <thead>
+      <tr><th>Feature</th><th>PSI</th><th>KL</th><th>KS stat</th><th>KS p-value</th><th>Drift</th></tr>
+    </thead>
+    <tbody>
+      {rows}
+    </tbody>
+  </table>
+</body>
+</html>
+"""
+    html_path = REPORTS_DIR / "drift-report.html"
+    html_path.write_text(html, encoding="utf-8")
+    return html_path
+
+
+def write_evidently_html_report(reference: pd.DataFrame, current: pd.DataFrame) -> Path:
+    """Write the Evidently report, supporting both old and current APIs."""
+    html_path = REPORTS_DIR / "drift-report.html"
+
+    try:
+        from evidently import Report
+        from evidently.presets import DataDriftPreset
+
+        report = Report([DataDriftPreset(method="psi")])
+        result = report.run(current, reference)
+        result.save_html(str(html_path))
+        return html_path
+    except (ImportError, AttributeError, TypeError):
+        # Evidently <0.7 used different module paths and run/save semantics.
+        from evidently.metric_preset import DataDriftPreset
+        from evidently.report import Report
+
+        report = Report(metrics=[DataDriftPreset()])
+        report.run(reference_data=reference, current_data=current)
+        report.save_html(str(html_path))
+        return html_path
+
+
 def main() -> int:
     rng = np.random.default_rng(seed=42)
     reference = synth_dataset(rng, shifted=False)
@@ -96,16 +165,11 @@ def main() -> int:
 
     # Optional: full Evidently HTML report (large dependency, gracefully skip if missing)
     try:
-        from evidently.report import Report
-        from evidently.metric_preset import DataDriftPreset
-
-        report = Report(metrics=[DataDriftPreset()])
-        report.run(reference_data=reference, current_data=current)
-        html_path = REPORTS_DIR / "drift-report.html"
-        report.save_html(str(html_path))
+        html_path = write_evidently_html_report(reference, current)
         print(f"Wrote: {html_path}")
-    except ImportError:
-        print("evidently not installed; skipping HTML report. Install with: pip install evidently")
+    except Exception as e:
+        html_path = write_fallback_html_report(summary)
+        print(f"could not write Evidently report ({e}); wrote fallback HTML report: {html_path}")
     return 0
 
 
